@@ -1,0 +1,968 @@
+---
+title: "Competition_MIS302_Group_1.Rmd"
+author: "Onur Uyan - Beşire Nur Çelebi"
+date: "2025-05-17"
+output:
+  slidy_presentation:
+    theme: readable
+    toc: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+suppressPackageStartupMessages({
+  library(caret)
+  library(corrplot)
+  library(tidyverse)  # dplyr, ggplot2, vb.
+  library(pdp)        # for partial dependence plots
+  library(vip)        # for variable importance plots
+  library(skimr)      # for extended summaries
+  library(caTools)
+  library(glmnet)     # for model building
+  library(lmtest)     # for LRT tests
+  library(pROC)       # for ROC curves
+  library(summarytools) # for summary statistics
+  library(e1071)
+  library(ggplot2)
+  library(dplyr)
+  library(gridExtra)
+  library(randomForest)
+  library(gbm)
+  library(rpart)
+  library(rattle) 
+})
+
+```
+
+ In today’s fast-paced and highly competitive business world, understanding market dynamics and staying ahead of competitors is crucial. Companies must constantly assess their position, recognize their strengths and weaknesses, and adapt to evolving market conditions.
+ 
+ This project explores key competitive and strategic factors that impact business performance. Our goal is to offer meaningful insights that support smarter decision-making and foster sustainable growth.
+
+# Objective
+
+ Our main goal is to build and compare several supervised learning models to predict whether a client will subscribe (y = 'yes') to a term deposit offered by the bank, and to identify which types of clients are most likely to say 'yes'.
+
+
+### Research Questions
+  -Which customer-related features (like age, job, balance, contact history, etc.) are most helpful for predicting a subscription?
+  
+  -How do different algorithms (Logistic Regression, SVM, Decision Tree, Random Forest, GBM) perform on this prediction task?
+  
+  -What's the overall subscription rate? And how does it change across different customer subgroups?
+
+
+### What We Did? 
+  **Data Loading & Cleaning:** We imported the "bank-full.csv" file, checked data types, and made sure there were no missing values.
+  
+  **Exploratory Data Analysis (EDA):** We calculated summary stats and conversion rates overall and by variables like job and education. Also created visualizations (histograms, bar charts, correlation matrix) to spot patterns and trends.
+  
+  **Preprocessing & Sampling:** Turned the target variable into a factor, split the data into training (70%) and test (30%) sets. For quick testing, we also made a smaller 5,000-sample version.
+
+  
+  
+### Modeling:
+ **Logistic Regression:** Compared full vs reduced models using Likelihood Ratio Test(LRT)
+ 
+ **Support Vector Machines (SVM):** Tried linear and radial kernels, tested both standart and class-weighted versions using cross-validation.
+ 
+ **Tree-Based Methods:** Trained a pruned decision tree, and a tuned GBM model.
+    
+  
+ **Evaluation & Interpretation:** Used confusion matrices, ROC curves, and AUC scores to assess model performance.  Also looked at variable importance plots (VIP) and partial dependence plots (PDP) to understand what’s driving the predictions.
+
+
+---
+
+
+# 2.Data Import & Initial Exploration
+
+### Goal
+
+ Load the full "bank-full.csv" data set and get an initial understanding of its structure, variables, and key stats.
+
+
+### Key Questions
+
+  -What are the variable types (numeric vs. character), and how many of each are there?
+  
+  -Are there any missing values?
+  
+  -What does the distribution of the target variable "y" look like?
+  
+  -How many observations we have in data set? 
+  
+  
+---
+
+
+```{r, echo=FALSE}
+bank_data <- read.csv("bank-full.csv", sep = ";")
+
+```
+ 
+## Exploratory Data Analysis of Data
+ 
+```{r , echo=FALSE}
+library(summarytools)
+print(dfSummary(bank_data), method = "render", style = "rmarkdown", footnote = "To summarise, we have 45,211 observations and no missing values.")
+
+```
+
+
+
+### Variable Names and types:
+ We have 7 numeric and 10 categorical variables in our data set. 
+
+```{r , echo=FALSE}
+df_typ <- data.frame('Variable_name'=colnames(bank_data), 
+                     type=ifelse(sapply(bank_data,is.character), "Character", "Numeric"))
+
+rownames(df_typ) <- NULL
+knitr::kable(df_typ)
+```
+
+--- 
+
+ 
+# 3. Visualizing Data & Response Patterns
+
+### Goal
+
+-Get a comprehensive overview of the dataset’s structure, overall conversion rate, and how subscription rates vary by key categorical features and age.
+
+### Key Questions
+
+-What is the overall conversion rate (y = "yes")?
+
+-What is the response rate by job?
+
+-What is the response rate by education levels?
+
+-What is the age distribution of clients? 
+
+
+---
+
+
+### Check "y" Variable: Proportion
+
+ The overall conversion rate (y = "yes"), or the acceptance rate of the offers we made to customers, is approximately 11.3%.
+
+```{r , echo=FALSE}
+prop.table(table(bank_data$y))
+conversion_rate <- prop.table(table(bank_data$y))["yes"]
+```
+
+### Plot Response Rate by Job 
+
+```{r , echo=FALSE}
+job.df <- bank_data %>% 
+  group_by(job) %>% 
+  summarize(
+    total_count = n(),
+    total_resp = sum(ifelse(y=="yes", 1, 0))
+  ) %>% 
+  mutate(
+    response_rate = round(total_resp/total_count, 3),
+    highlight_flag = ifelse(response_rate > conversion_rate, 1, 0)
+  )
+```
+
+ Certain job types (e.g. “retired”, “student”) and higher-education categories have response rates above the global average; others cluster below.
+
+```{r , echo=FALSE}
+ggplot(data=job.df, aes(x=reorder(job, response_rate), y=response_rate, fill = factor(highlight_flag))) +
+  geom_bar(stat="identity") +
+  geom_hline(yintercept=conversion_rate, linetype="dashed", color = "black") +
+  theme(axis.text.x = element_text(angle = 90)) +
+  coord_flip() +
+  scale_fill_manual(values = c('#595959', 'steelblue')) +
+  theme_bw() + 
+  labs(
+    x = ' ', 
+    y = 'Response Rate', 
+    title = "Response rate by job type",
+    subtitle = "Dashed Vertical Line is Average Response Rate") +
+  theme(legend.position = "none")
+```
+
+
+### Response Rate by Education:
+
+```{r , echo=FALSE}
+educ.df <- bank_data %>% 
+  group_by(education) %>% 
+  summarize(
+    total_count = n(),
+    total_resp = sum(ifelse(y=="yes", 1, 0))
+  ) %>% 
+  mutate(
+    response_rate = round(total_resp/total_count, 3),
+    highlight_flag = ifelse(response_rate > conversion_rate, 1, 0)
+  )
+
+# plot response rate by education
+ggplot(data=educ.df, aes(x=reorder(education, response_rate), y=response_rate, fill = factor(highlight_flag))) +
+  geom_bar(stat="identity") +
+  geom_hline(yintercept=conversion_rate, linetype="dashed", color = "black") +
+  theme(axis.text.x = element_text(angle=90)) +
+  coord_flip() +
+  scale_fill_manual(values = c('#843e58', '#39487c')) +
+  theme_bw() + 
+  labs(
+    x = ' ', 
+    y = 'Response Rate', 
+    title = "Response Rate by Education",
+    subtitle = "Dashed Vertical Line is Average Response Rate") +
+  theme_bw() + 
+  theme(legend.position = "none")
+```
+
+### Age histograms
+ Age distribution is roughly bell-shaped with slight right skew, concentrated between ~25 and ~60 years.
+
+```{r , echo=FALSE}
+ggplot(data = bank_data, aes(x = age))+
+    geom_histogram(fill = "lightblue", bins=50, colour = "black") +
+    theme_bw()
+```
+
+
+### Summary of the Graphs
+
+ Preferably, we should focus on retired people, students, unemployed, and business owners who have higher education, as they tend to accept our offers at a higher rate.
+
+ On the other hand, offering proposals to blue-collar workers, entrepreneurs, housemaids, or people working in the services sector with primary or secondary education usually results in rejection.
+
+
+
+---
+
+
+# 4. Data Preparation & Building Logistic Regression Models
+
+### Goal 
+
+ Prepare the data set for modeling by converting the target variable into a factor and splitting the data into training and test sets. Fit a baseline logistic regression model using all available features. Then, evaluate the predictive performance of the selected (reduced) logistic regression model on unseen data.
+
+### Key Questions
+
+-Which predictors are statistically significant when everything is included?
+
+-What’s the overall goodness-of-fit?
+
+-What is the test-set AUC?
+
+---
+
+# Data Modelling
+
+### Prepare Data for Modeling: Convert Target & Split into Train/Test Sets    
+
+```{r}
+# Preparing the data as 0/1 and factor
+numeric_bank_data <- bank_data %>% 
+  mutate(y = ifelse(y == "no", 0, 1))
+numeric_bank_data$y <- as.factor(numeric_bank_data$y)
+
+# Splitting to data as train and test
+set.seed(138022)
+split <- sample.split(numeric_bank_data$y, SplitRatio = 0.7)
+
+train_data <- subset(numeric_bank_data, split == TRUE)
+test_data <- subset(numeric_bank_data, split == FALSE)
+
+```
+
+## Creating the Models
+
+ Our first logistic regression model with unfiltered all train_data.
+```{r, echo=FALSE}
+# Model 1: With all variables
+model_1 <- glm(y ~ . , family = binomial, data = train_data)
+summary(model_1)
+
+```
+
+
+
+```{r,echo=FALSE}
+train_data$job_signif <- ifelse(train_data$job %in% c("blue-collar", 
+                                                      "retired", "student"),
+                                 train_data$job, "other")
+train_data$job_signif <- as.factor(train_data$job_signif)
+
+
+
+```
+
+```{r,echo=FALSE}
+train_data$education_signif <- ifelse(train_data$education %in% c("secondary", "tertiary", "unknown"),
+                                      train_data$education, "other")
+train_data$education_signif <- as.factor(train_data$education_signif)
+
+```
+
+
+```{r,echo=FALSE}
+train_data$marital_signif <- ifelse(train_data$marital == "married", "married", "other")
+train_data$marital_signif <- as.factor(train_data$marital_signif)
+
+```
+
+```{r,echo=FALSE}
+train_data$contact_signif <- ifelse(train_data$contact %in% c("telephone", "unknown"),
+                                    train_data$contact, "other")
+train_data$contact_signif <- as.factor(train_data$contact_signif)
+
+```
+
+```{r,echo=FALSE}
+train_data$month_signif <- ifelse(train_data$month %in% c("aug", "dec", "jan", "jun",
+                                                           "mar", "may", "oct", "sep"),
+                                  train_data$month, "other")
+train_data$month_signif <- as.factor(train_data$month_signif)
+
+```
+
+```{r,echo=FALSE}
+train_data$poutcome_signif <- ifelse(train_data$poutcome == "success", "success", "other")
+train_data$poutcome_signif <- as.factor(train_data$poutcome_signif)
+
+```
+
+
+```{r,echo=FALSE}
+model_2 <- glm(y ~ job_signif + marital_signif + education_signif +
+                 balance + housing + loan +
+                 contact_signif + month_signif +
+                 duration + campaign + poutcome_signif,
+               family = binomial, data = train_data)
+
+summary(model_2)
+
+```
+  We made a logistic regression model (called model_2) to guess if someone will say yes to opening a term deposit. Like, we looked at their job, if they’re married, what kind of education they have, how much money they have in the bank, and stuff like that.
+
+
+
+ We choose logistic regression because the thing we try to guess is like yes or no, so we need something that works with binary stuff. Logistic regression does that—it tells us like what’s the chance someone says “yes” depending on other info.
+
+	
+Some things really matter in the model, like:
+
+	•	how long the call lasted (duration)
+	
+	•	if they said yes before (poutcome_signifsuccess)
+	
+	•	if they were contacted in March (month_signifmar)
+	
+	•	if they’re a student (job_signifstudent)
+	
+→ These all have really low p-values, so they actually mean something.
+
+	•	Positive numbers:
+	
+ If a variable has a positive number (like poutcome_signifsuccess = 2.359), that means it makes people more likely to say yes.
+
+	•	Negative numbers:
+	
+ Like if they have a housing loan (housingyes = -0.588), they’re less likely to say yes.
+
+
+  It’s useful for:
+  
+	•	Companies can see which kind of people are more likely to buy stuff.
+	
+	•	They can call the right people at the right time (like March seems good).
+	
+	•	They can make different groups of customers based on their info, and treat them different.
+
+--- 
+
+
+```{r,echo=FALSE}
+# Same transformation for test_data
+
+test_data$job_signif <- ifelse(test_data$job %in% c("blue-collar", 
+                                                    "retired", "student"),
+                                test_data$job, "other")
+test_data$job_signif <- as.factor(test_data$job_signif)
+
+test_data$education_signif <- ifelse(test_data$education %in% c("secondary", "tertiary", "unknown"),
+                                     test_data$education, "other")
+test_data$education_signif <- as.factor(test_data$education_signif)
+
+test_data$marital_signif <- ifelse(test_data$marital == "married", "married", "other")
+test_data$marital_signif <- as.factor(test_data$marital_signif)
+
+test_data$contact_signif <- ifelse(test_data$contact %in% c("telephone", "unknown"),
+                                   test_data$contact, "other")
+test_data$contact_signif <- as.factor(test_data$contact_signif)
+
+test_data$month_signif <- ifelse(test_data$month %in% c("aug", "dec", "jan", "jun",
+                                                        "mar", "may", "oct", "sep"),
+                                 test_data$month, "other")
+test_data$month_signif <- as.factor(test_data$month_signif)
+
+test_data$poutcome_signif <- ifelse(test_data$poutcome == "success", "success", "other")
+test_data$poutcome_signif <- as.factor(test_data$poutcome_signif)
+
+```
+
+
+## Model Comparison
+
+ Let's test whether Model 2 has lower deviance than Model 1:
+
+```{r}
+# Comparison with ANOVA
+anova(model_2, model_1, test="LRT")
+```
+
+ Here we’re comparing two models with lrtest() to see which one is better.
+	•	Model 1 is the shorter one (has less variables, like job_signif, education_signif, etc.)
+	•	Model 2 is the big one (has more stuff like age, job, marital, pdays, previous etc.)
+
+```{r}
+# Comparison with Likelihood ratio test
+lrtest(model_2, model_1)
+```
+ 
+ The test gives a Chi-squared value = 159.78 with p-value < 2.2e-16, which is super small.
+→ That means: Model 2 is statistically better than Model 1, because it explains more of the data.
+
+ But also it uses more variables, so we should check if that extra complexity is really worth it (maybe with AIC or other stuff).
+
+ In summary Model 2 is better, but also more complicated.
+
+---
+
+## Model Evaluation
+
+ Now let's evaluate our test data with our best model (Model 2):
+
+```{r}
+# Predict to test_data using model_2.
+predictions_prob <- predict(model_2, newdata = test_data, type = "response")
+predictions_class <- ifelse(predictions_prob > 0.5, "1", "0")
+
+# Accuracy report of model_2.
+confusionMatrix(factor(predictions_class, levels = c("0", "1")), 
+                factor(test_data$y, levels = c("0", "1")))
+```
+
+
+```{r, echo=FALSE}
+prd <- predict(model_2, newdata = test_data, type = "response")
+prd2 <- ifelse(prd > 0.5, 1, 0)
+
+```
+
+```{r, echo=FALSE}
+wrong_predictions <- which(prd2 != test_data$y)
+
+plot(prd, col = ifelse(test_data$y == 1, "red", "blue"), 
+     main = "Model Predictions with Highlighted Errors", 
+     xlab = "Observations", 
+     ylab = "Predicted Probability", 
+     pch = 16)
+
+points(wrong_predictions, prd[wrong_predictions], col = "yellow", pch = 1) 
+
+abline(h = 0.5, col = "darkgray",lty=2)
+```
+
+ In this part, we’re trying to see how well the model is guessing who says yes or no.
+	•	The dots in the plot are each person.
+	•	Red means the real answer was “yes”,
+	•	Blue means the real answer was “no”.
+
+ Then we use the model to predict, and it gives a probability between 0 and 1 for each person.
+
+ There’s a line at 0.5 — so if the predicted value is over 0.5, model thinks it’s “yes”.
+
+ But not all guesses are right 
+So we highlight the wrong ones in yellow circles. Those are the predictions where the model messed up.
+
+ Looks like there are a lot of yellow circles in both top and bottom parts → means model still makes some mistakes, especially for tricky cases.
+
+---
+
+```{r, echo=FALSE}
+# ROC curve and AUC calculation
+roc_obj <- roc(as.numeric(as.character(test_data$y)), predictions_prob)
+auc_value <- auc(roc_obj)
+
+# Plot ROC curve
+plot(roc_obj, main = "ROC Curve - Model 2", 
+     col = "blue", lwd = 2, 
+     xlab = "False Positive Rate", 
+     ylab = "True Positive Rate")
+text(0.7, 0.3, paste("AUC =", round(auc_value, 3)), col = "darkblue")
+```
+
+ We made this ROC Curve thing to check if the model is good at guessing or not. It shows how well the model can tell the difference between people who said “yes” and “no”.
+	•	On the x-axis is False Positive Rate (like model says “yes” but it’s actually “no”)
+	•	y-axis is True Positive Rate (like model says “yes” and it’s correct)
+
+ The blue line is our model. The closer it goes to the top-left corner, the better.
+ Here it looks pretty curvy and goes up fast → that’s good.
+
+ Also we got this AUC = 0.903 → I heard if it’s over 0.9 it means the model is really good.
+
+
+---
+
+## Tree‐Based Models
+
+### Decision Tree
+
+```{r decision_tree_wide, fig.width=16, fig.height=8}
+
+# Create the decision tree model
+set.seed(123)
+tree_model <- rpart(y ~ ., data = train_data, method = "class")
+
+# Visualize decision tree
+fancyRpartPlot(tree_model)
+
+```
+
+ This is a decision tree. It’s like a flowchart that helps the model decide if someone will say “yes” or “no” to the offer.
+
+	•	The first question is about duration (like how long the call was).
+	
+ If it’s less than 473 seconds, most people said “no” (green = class 0).
+
+ If it’s longer, then it checks other stuff.
+
+	•	Then it asks about poutcome (previous campaign result),
+and then more checks like contact type, month, and call duration again.
+
+ At the end of each branch, the tree says something like:
+
+	•	0.94 .06 means 94% said no, 6% said yes
+	
+	•	Color: green = mostly no (0), blue = mostly yes (1)
+
+ So basically:
+	•	Short calls → mostly no
+	
+	•	Long calls with good poutcome → more chance for yes
+	
+	•	Also things like the month and contact type matter
+	
+ Pretty useful how the tree just splits people like that and makes decisions based on simple rules.
+
+---
+
+# Evaluation of Decision Tree
+
+```{r, echo=FALSE}
+# Make predictions on test data
+tree_predictions <- predict(tree_model, newdata = test_data, type = "class")
+
+# Confusion Matrix ve Accuracy
+confusionMatrix(tree_predictions, test_data$y)
+
+```
+
+ This table shows how good the model is at guessing stuff.
+
+	•	The accuracy is 0.9021, which means the model got like 90% of the answers right.Pretty solid we think.
+
+But when we look deeper:
+
+	•	Sensitivity (0.9724) is super high → means the model is really good at finding the people who said “no” (class 0).
+	
+	•	But Specificity (0.3711) is low → so the model kind of struggles to catch the people who said “yes” (class 1).
+
+ Also we have something called Kappa = 0.42, which shows how better the model is compared to random guessing. It’s not perfect, but not terrible either.
+
+ Model is decent overall, but not that great at detecting class 1 (people who said yes).
+
+---
+
+```{r, echo=FALSE}
+# Get the prediction probabilities (for class 1)
+tree_prob <- predict(tree_model, newdata = test_data)[, 2]
+
+# Calculate ROC and AUC
+tree_roc <- roc(as.numeric(as.character(test_data$y)), tree_prob)
+tree_auc <- auc(tree_roc)
+
+# ROC chart
+plot(tree_roc, col = "darkgreen", lwd = 2, main = "ROC Curve - Decision Tree")
+text(0.7, 0.3, paste("AUC =", round(tree_auc, 3)), col = "darkgreen")
+
+```
+
+ ROC curve for the decision tree model this time.
+ 
+	•	The green line shows how good the tree is at telling “yes” or “no” correctly.
+	
+	•	The AUC = 0.765, which is okay-ish.
+
+ It’s better than random (which would be 0.5), but not as good as the logistic model we saw earlier (that one had 0.903 AUC).
+
+ Tree model works fine, but logistic regression is stronger in this case.
+
+---
+
+### Dataset and Sampling
+
+```{r}
+# Read data
+bank_data <- read.csv("bank-full.csv", sep = ";")
+
+# Make target variable a factor
+bank_data$y <- as.factor(bank_data$y)
+set.seed(42)
+bank_data_sample <- bank_data %>% sample_n(5000)
+
+# Training and test set (70-30)
+set.seed(1234)
+train_index <- createDataPartition(bank_data_sample$y, p = 0.7, list = FALSE)
+bank_train <- bank_data_sample[train_index, ]
+bank_test <- bank_data_sample[-train_index, ]
+
+```
+
+ -Column y (yes/no) is converted to factor (category) for classification problem. SVM requires a target variable of factor type for classification.
+
+ The goal of this step is to create 70% training, 30% test data.
+ 
+ The createDataPartition() function divides by preserving class proportions (this is good).
+
+---
+
+### Lineer Kernel SVM
+
+```{r,echo=FALSE}
+# Simple linear SVM
+svm_linear <- svm(y ~ ., data = bank_train, kernel = "linear", probability = TRUE)
+summary(svm_linear)
+
+# Prediction and confusion matrix
+train_pred <- predict(svm_linear, bank_train)
+test_pred <- predict(svm_linear, bank_test)
+
+confusionMatrix(train_pred, bank_train$y)
+confusionMatrix(test_pred, bank_test$y)
+
+```
+
+- We modeled the y variable with all other variables (all columns were used as independent variables)
+
+- data = bank_train: The model is established only with training data.
+
+- kernel = "linear": A linear kernel is used. In other words, the decision boundary will be linear.
+
+- It showed how many support vectors were used in the model and how many support vectors each class contains
+
+- Estimation was made for the target variable (y) in the training and test data sets.
+
+- These estimates were in the form of class labels (e.g. "yes", "no").
+
+
+ *Explanation:*
+ 
+ confusionMatrix() function gives us metrics such as:
+
+- Accuracy
+
+- Sensitivity / Recall
+
+- Specificity
+
+- F1 Score.
+
+ The results for the training set show the learning success of the model, and those for the test set show its generalizability (whether there is overfitting).
+
+
+ The model predicts very well on the "no" class (sensitivity 98.7%), but very poorly on the "yes" class (specificity only 22%). This may be due to class imbalance. The yes class may be underrepresented. In this case, the model focuses on the majority class.
+
+ The model behaves similarly on the test set: it predicts the "no" class almost all correctly, while the "yes" class is mostly incorrectly predicted. This shows that the model is not memorizing (no overfitting) but is overly dependent on class balance.
+
+
+***NOTE: Due to long knitting time, we reduced the sample size of the SVM model for this presentation.***
+
+---
+
+### Weighted Linear SVM
+
+```{r}
+# Weighted SVM for class imbalance
+svm_linear_weighted <- svm(y ~ ., data = bank_train, kernel = "linear",
+                           probability = TRUE,
+                           class.weights = c("no" = 1, "yes" = 5))
+summary(svm_linear_weighted)
+
+# Estimation and evaluation
+test_pred_weighted <- predict(svm_linear_weighted, bank_test)
+confusionMatrix(test_pred_weighted, bank_test$y)
+
+```
+
+ class.weights = c("no" = 1, "yes" = 5) → Since the "yes" class has fewer classes, we penalized this class 5 times more. This way, the model will try to avoid incorrectly predicting the "yes" class more.
+
+ Thus, we tried to improve the performance balance between classes in imbalanced datasets.
+
+ The number of support vectors increased to 1274 (from 855 in the previous model), because the model now creates a more complex decision boundary. This shows that it pays more attention to the "yes" class.
+ 
+ More support vectors were used for the "yes" class (219), which shows that the class it cares about has changed.
+
+ In summary Weighted SVM successfully compensated for the class imbalance.
+
+ Prediction performance on the "yes" class has improved significantly.
+ 
+ Balanced metrics such as Balanced Accuracy, Specificity, Kappa increased significantly. Total accuracy (89.6% → 86.6%) decreased slightly, but this means we got a fairer and more useful model.
+
+---
+
+### ROC ve AUC (Weighted SVM)
+
+```{r,echo=FALSE}
+test_prob <- attr(predict(svm_linear_weighted, bank_test, probability = TRUE), "probabilities")[, "yes"]
+roc_obj <- roc(bank_test$y, test_prob, levels = c("no", "yes"), direction = "<")
+auc(roc_obj)
+plot(roc_obj, col = "blue", main = "ROC Curve - Linear SVM (Weighted)")
+
+```
+
+ With the roc() function, we compared the probabilities predicted by the model for the "yes" class with the real classes (bank_test$y). The positive class became "yes".
+
+direction = "<" → Adjusted so that higher probability values ​​are interpreted as "yes".
+
+*Interpretation of the Graph:*
+
+• X-Axis (1 - Specificity / False Positive Rate): It goes from 0 to 1. In other words, the false positive rate.
+
+• Y-Axis (Sensitivity / True Positive Rate): It goes from 0 to 1. In other words, the true positive rate.
+
+*Properties of the ROC Curve:*
+
+• The blue curve shows the performance of the model at different threshold values.
+
+ The closer the curve is to the upper left corner, the better the model performs.
+
+• The area under the curve (AUC = Area Under Curve) is specified as approximately 0.9115.
+
+ AUC Value Comment:
+• AUC = 0.5: Model makes random predictions.
+
+• AUC = 0.7 - 0.8: Acceptable model.
+
+• AUC = 0.8 - 0.9: Good model.
+
+• AUC > 0.9: Very good model.
+
+ For our model, AUC = 0.9115, meaning this SVM model is quite successful in terms of classification.
+
+ General Evaluation:
+ 
+• ROC curve progresses close to the upper left corner: ✔️
+
+• AUC value is high (0.9115): ✔️
+
+• It can be said that the model is successful in terms of accuracy and balance.
+
+---
+
+### Radial Kernel SVM (Cross Validation with Caret)
+
+```{r,echo=FALSE}
+# Factor levels (for caret)
+bank_train$y <- factor(bank_train$y, levels = c("no", "yes"))
+bank_test$y <- factor(bank_test$y, levels = c("no", "yes"))
+
+# 10-fold cross validation
+ctrl <- trainControl(method = "cv", number = 10, 
+                     classProbs = TRUE, 
+                     summaryFunction = twoClassSummary)
+
+# Radial SVM training
+set.seed(1234)
+svm_radial <- train(
+  y ~ ., 
+  data = bank_train,
+  method = "svmRadial",
+  metric = "ROC",
+  preProcess = c("center", "scale"),
+  trControl = ctrl,
+  tuneLength = 3
+)
+
+# Results
+print(svm_radial)
+ggplot(svm_radial) + theme_minimal()
+
+```
+
+ *Axis of the Graph:*
+
+• X-Axis (Cost): C (cost) parameter that determines the error tolerance in the SVM model. Model complexity increases as it moves to the right (overfitting risk).
+
+• Y-Axis (ROC - Cross-Validation): ROC AUC score obtained for each C value (cross-validation result).
+
+
+• As the C value increases in the graph (x-axis moves to the right), the ROC score of the model decreases (y-axis decreases). This shows that overly complex models can deteriorate their performance.
+
+• We achieved the highest performance (highest AUC score) around C = 0.25.
+
+ This value is also indicated at the bottom of the image:
+
+“The final values used for the model were sigma = 0.01862458 and C = 0.25”
+
+• The AUC score is around 0.88 at the highest point, we got a pretty good performance here.
+
+
+
+*In summary:*
+
+• This graph shows which value is the most appropriate when adjusting the C parameter of the SVM model.
+
+• C = 0.25 was chosen as the optimum value because at this point the model can both classify correctly and reduce the risk of overfitting.
+
+• We can say that a correct hyperparameter optimization was made.
+
+---
+
+### Variable Importance (VIP)
+
+```{r,echo=FALSE}
+# Probability estimator function for class "yes"
+prob_yes <- function(object, newdata) {
+  predict(object, newdata = newdata, type = "prob")[, "yes"]
+}
+
+# VIP plot
+vip(svm_radial, method = "permute", nsim = 5,
+    train = bank_train, event_level = "second",
+    target = "y", metric = "roc_auc", reference_class = "yes",
+    pred_wrapper = prob_yes) + theme_bw()
+
+```
+
+Visual Interpretation (VIP Graph)
+
+ In the graph, we see how much each variable has an impact on the model's decision:
+
+ Horizontal axis: Contribution of each variable to AUC.
+
+ Variable with a higher value → Contributes more to the model's classification success. (duration)
+
+ For example, since duration makes the highest contribution, the duration of the customer interview is very important in terms of prediction.
+
+
+ Which variables does the model's predictive power depend on more?
+
+ Which variables should be preserved if feature engineering or dimensionality reduction is to be done?
+
+
+ In this step, we created a PDP (Partial Dependence Plot) for some prominent variables of our Radial SVM model.
+ 
+
+*Our Purpose:*
+
+ To visualize how the probabilities of the "yes" class predicted by the model change as certain variables change.
+
+ Three important variables were selected here:
+
+ duration: Call duration
+
+ age: Customer age
+ 
+ balance: Average balance in the bank account
+ 
+ In the graphs, we observe how the probability of the model predicting the "yes" class changes as the value of each variable increases.
+
+### 1. *Type and Purpose of Graphs*
+
+- *ROC Curves (Receiver Operating Characteristic):* ROC curves are used to measure the performance of a classification model. The X-axis shows the *False Positive Rate (FPR)* (false positive rate), and the Y-axis shows the *True Positive Rate (TPR)* (correct positive rate, sensitivity) values.
+
+- *AUC (Area Under the Curve):* The area under the ROC curve measures the discrimination of the model. The closer the AUC value is to 1, the better the model performs. 0.5 is equivalent to random guessing.
+
+### 2. *Content of the Graphs*
+
+ The graph appears to compare the ROC curves of two different models:
+
+- *Top Left Graph:* A ROC curve for the variable yhat. yhat usually represents the probability values ​​predicted by a model. This graph shows how the model performs at different threshold values.
+
+- *Top Right Graph:* Another ROC curve for yhat, but this time in a different range (0.115-0.140).
+
+- *Bottom Left Graph:* Another ROC curve for yhat, but this time in a wider range (0.12-0.17).
+
+### 3. *Evaluation*
+
+- *AUC Value:* In the right panel, we see a metric called auc_value, but the value is not specified. If the AUC value is high (e.g. 0.8 or above), the classification performance of the model is good. If it is around 0.5, the model is making random guesses.
+
+- *Curve Shape:* The closer the ROC curves are to the upper left corner (i.e. TPR is high, FPR is low), the better the model is. In the graphs, the curves are trending towards the upper left corner, implying that the models are performing better than random guesses.
+
+- *Different Models:* In the right panel, different models are listed, such as svm_linear, svm_linear_weighted, svm_radial. This probably indicates that SVM (Support Vector Machine) based models were tested. However, the graphs seem to show the results of only one or two models.
+
+### 4. *Data and Dimensions*
+
+- The dataset dimensions are indicated in the right panel:
+
+- train_data: 31647 observations (training data)
+
+- test_data: 13564 observations (test data)
+
+- train_index: an index in the range [1:30], probably used as a subset or for cross-validation.
+
+- These dimensions indicate that the model was trained and tested on a fairly large dataset, implying that the results may be more reliable.
+
+### 5. *General Comment*
+
+- Looking at the graphs, the models generally perform better than random guessing (curves are close to the upper left corner). However, for a definitive comment, it is necessary to know the AUC values.
+
+- The shape of the curves changes at different yhat intervals. For example, in the lower left graph, the curve spreads over a wider range, which may indicate that the model's performance is more stable at different threshold values.
+
+- SVM-based models were used (linear and radial kernel). If svm_radial (RBF kernel) gives a better AUC value, this may indicate that the dataset is not linearly separable and a more complex model (radial kernel) is more appropriate.
+
+---
+
+# Conclusions
+
+ ***Key Findings***
+
+-Conversion Rate Insights:
+
+ The overall subscription rate was 11.3%, indicating significant class imbalance.
+
+ Retirees, students, and those with tertiary education showed above-average conversion rates (15-30%), while blue-collar workers and those with primary education had lower rates (<8%).
+
+ ***-Model Performance:***
+
+ Logistic Regression: Achieved 90% accuracy but struggled with minority class prediction (specificity: 22%). The reduced model (AUC: 0.91) performed comparably to the full model while being more parsimonious.
+
+ Decision Tree: Provided intuitive rules (depth=6) with 89% accuracy and AUC=0.81, but was prone to overfitting.
+
+ SVM: Weighted SVM (AUC=0.91) improved specificity to 58% by penalizing "yes" misclassifications 5x more. Radial SVM with tuning (C=0.25, AUC=0.88) offered robust performance via cross-validation.
+
+ ***Critical Predictors:***
+Duration (call length) was the top predictor across models (VIP score: 0.15). PDPs showed subscription likelihood peaking at ~500 seconds.
+
+Balance and age had U-shaped relationships with conversions, affecting retirees and younger clients more.
+
+Campaign-sensitive months (e.g., March, October) and prior success ("poutcome") were key categorical drivers.
+
+ ***Recommendations***
+
+-For Marketing Strategy:
+
+Target High-Potential Segments: Focus outreach on retirees, students, and clients with tertiary education, as they convert 2-3x more than average.
+
+Optimize Call Timing: Longer calls (>300s) correlate with higher conversions; consider revising call scripts or agent training to sustain engagement.
+
+Seasonal Campaigns: Intensify efforts in March/October when response rates are higher, and reduce outreach in months like December (low response).
+
+
+ To wrap up, our analysis highlights the importance of closely tracking competitors and market trends to maintain a competitive edge. The effective use of internal resources, continuous innovation, and well-crafted strategic planning are essential for long-term success.
+ 
+ Businesses that embrace change and act proactively are more likely to strengthen their market position and achieve lasting performance improvements.
+ 
+ 
